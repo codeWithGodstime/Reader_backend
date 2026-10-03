@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 
 from catalog.models import Book, Collection, Genre, Review, Shelf
 from catalog.present import book_detail, book_summary, review_payload
+from catalog.realtime import publish_saved
 from catalog.queries import book_queryset, filter_books, genre_counts, saved_book_ids
 from catalog.serializers import ReviewCreateSerializer, ShelfBookSerializer, ShelfWriteSerializer
 from commerce.models import OrderItem
@@ -150,11 +151,13 @@ class SaveBookView(APIView):
         book = _book_or_404(book_id)
         shelf = _default_shelf(request.user)
         shelf.books.add(book)
+        publish_saved(request.user)
         return Response({"book_id": str(book.id), "saved": True, "shelf_id": str(shelf.id)})
 
     def delete(self, request, book_id):
         book = _book_or_404(book_id)
         Shelf.books.through.objects.filter(shelf__user=request.user, book=book).delete()
+        publish_saved(request.user)
         return Response({"book_id": str(book.id), "saved": False, "shelf_id": None})
 
 
@@ -212,6 +215,7 @@ class ShelfListView(APIView):
                 details=[{"field": "name", "message": "You already have a shelf with that name."}],
             )
         shelf = Shelf.objects.create(user=request.user, name=name, is_default=False)
+        publish_saved(request.user)
         return Response(_shelf_payload(shelf, request.user, with_books=True), status=201)
 
 
@@ -232,6 +236,7 @@ class ShelfDetailView(APIView):
             )
         shelf.name = name
         shelf.save(update_fields=["name"])
+        publish_saved(request.user)
         return Response(_shelf_payload(shelf, request.user, with_books=True))
 
     def delete(self, request, shelf_id):
@@ -239,6 +244,7 @@ class ShelfDetailView(APIView):
         if shelf.is_default:
             raise APIError("The default Saved shelf cannot be deleted.", code="conflict", status_code=409)
         shelf.delete()
+        publish_saved(request.user)
         return Response(status=204)
 
 
@@ -251,6 +257,7 @@ class ShelfBooksView(APIView):
         if book is None:
             raise APIError("Book not found.", code="not_found", status_code=404)
         shelf.books.add(book)
+        publish_saved(request.user)
         return Response(_shelf_payload(shelf, request.user, with_books=True))
 
 
@@ -260,4 +267,5 @@ class ShelfBookDetailView(APIView):
         if not shelf.books.filter(pk=book_id).exists():
             raise APIError("That book is not on this shelf.", code="not_found", status_code=404)
         shelf.books.remove(book_id)
+        publish_saved(request.user)
         return Response(status=204)
