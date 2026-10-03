@@ -9,6 +9,22 @@ env.read_env(BASE_DIR / ".env")
 SECRET_KEY = env("SECRET_KEY", default="dev-only-reader-secret-key-not-for-production")
 DEBUG = env.bool("DEBUG", default=True)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["127.0.0.1", "localhost"])
+# Android emulator reaches this process as Host 10.0.2.2, not 127.0.0.1.
+if DEBUG and "10.0.2.2" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append("10.0.2.2")
+# ngrok's public host is not localhost. Leading-dot entries match that host's subdomains.
+NGROK_HOST_SUFFIXES = (
+    ".ngrok-free.app",
+    ".ngrok-free.dev",
+    ".ngrok.io",
+    ".ngrok.app",
+    ".ngrok.dev",
+)
+if DEBUG:
+    for suffix in NGROK_HOST_SUFFIXES:
+        if suffix not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(suffix)
+    CSRF_TRUSTED_ORIGINS = [f"https://*{suffix}" for suffix in NGROK_HOST_SUFFIXES]
 PORT = env.int("PORT", default=8001)
 
 if env("DATABASE_URL", default=""):
@@ -43,6 +59,7 @@ CORS_ALLOWED_ORIGINS = env.list(
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",
     r"^http://127\.0\.0\.1:\d+$",
+    r"^http://10\.0\.2\.2:\d+$",
 ]
 
 GOOGLE_OAUTH_CLIENT_IDS = env.list("GOOGLE_OAUTH_CLIENT_IDS", default=[])
