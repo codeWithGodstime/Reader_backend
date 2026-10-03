@@ -10,6 +10,7 @@ from catalog.models import Book
 from catalog.present import isoformat_z
 from commerce.models import Faq, NewsletterSubscription, Order, SupportMessage
 from commerce.present import cart_payload, invoice_payload, order_payload, tracking_payload
+from commerce.realtime import publish_cart
 from commerce.serializers import (
     CartItemCreateSerializer,
     CartItemUpdateSerializer,
@@ -73,7 +74,7 @@ class CartItemListView(APIView):
         edition = edition_for(book, data["format"])
         cart = get_cart(request.user)
         add_line(cart, book, edition, data["quantity"])
-        return Response(cart_payload(cart))
+        return Response(publish_cart(request.user, cart))
 
 
 class CartItemDetailView(APIView):
@@ -98,12 +99,12 @@ class CartItemDetailView(APIView):
                 item.unit_price = edition.price
                 item.format_label = edition.label
             item.save()
-        return Response(cart_payload(cart))
+        return Response(publish_cart(request.user, cart))
 
     def delete(self, request, item_id):
         cart, item = self._item(request, item_id)
         item.delete()
-        return Response(cart_payload(cart))
+        return Response(publish_cart(request.user, cart))
 
 
 class CartVoucherView(APIView):
@@ -117,13 +118,13 @@ class CartVoucherView(APIView):
         cart = get_cart(request.user)
         cart.voucher = voucher
         cart.save(update_fields=["voucher"])
-        return Response(cart_payload(cart))
+        return Response(publish_cart(request.user, cart))
 
     def delete(self, request):
         cart = get_cart(request.user)
         cart.voucher = None
         cart.save(update_fields=["voucher"])
-        return Response(cart_payload(cart))
+        return Response(publish_cart(request.user, cart))
 
 
 class ShippingMethodView(APIView):
@@ -168,6 +169,7 @@ class CheckoutView(APIView):
         serializer = CheckoutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order = checkout_cart(request.user, serializer.validated_data)
+        publish_cart(request.user, get_cart(request.user))
         order = _order_or_404(request.user, order.id)
         return Response(order_payload(order), status=201)
 
@@ -238,7 +240,7 @@ class BuyAgainView(APIView):
     def post(self, request, order_id):
         order = _order_or_404(request.user, order_id)
         cart = buy_again(request.user, order)
-        return Response(cart_payload(cart))
+        return Response(publish_cart(request.user, cart))
 
 
 class NewsletterView(APIView):
