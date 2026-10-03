@@ -16,7 +16,9 @@ python manage.py seed_reader
 python manage.py runserver
 ```
 
-`runserver` listens on `127.0.0.1:$PORT` (default `8001`) when no address is passed. Docs: `http://127.0.0.1:8001/api/docs/`
+`runserver` listens on `127.0.0.1:$PORT` (default `8001`) when no address is passed. Daphne is first in `INSTALLED_APPS`, so that command is the ASGI server and also serves websockets. Docs: `http://127.0.0.1:8001/api/docs/`
+
+Cart changes (add, update, remove, voucher, checkout, buy-again) are broadcast to `ws://<host>/ws/cart/?token=<access JWT>` for that user only. The channel layer is in-memory and stays inside one process. Production should run one Daphne process: `daphne -b 0.0.0.0 -p $PORT config.asgi:application`. More than one worker needs a Redis channel layer, which is not configured.
 
 Unset `DJANGO_SETTINGS_MODULE` uses `config.settings.local`. Production must set `DJANGO_SETTINGS_MODULE=config.settings.production` and provide `SECRET_KEY`, `ALLOWED_HOSTS`, a Postgres `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`, and `GOOGLE_OAUTH_CLIENT_IDS`. Copy `.env.example` to `.env` for local values. Do not commit `.env`.
 
