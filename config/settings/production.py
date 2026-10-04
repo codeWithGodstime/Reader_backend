@@ -21,7 +21,7 @@ if not ALLOWED_HOSTS:
     raise ImproperlyConfigured("Set ALLOWED_HOSTS in the environment.")
 
 _database_url = _required("DATABASE_URL")
-DATABASES = {"default": env.db_url(_database_url)}
+DATABASES = {"default": env.db_url_config(_database_url)}
 if DATABASES["default"]["ENGINE"] != "django.db.backends.postgresql":
     raise ImproperlyConfigured("DATABASE_URL must be a Postgres URL.")
 

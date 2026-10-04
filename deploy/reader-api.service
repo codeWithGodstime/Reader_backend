@@ -1,0 +1,22 @@
+[Unit]
+Description=Reader API
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=reader
+Group=reader
+WorkingDirectory=/opt/reader-api
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/reader-api.env
+ExecStart=/opt/reader-api/.venv/bin/daphne -b 127.0.0.1 -p 8001 config.asgi:application
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
