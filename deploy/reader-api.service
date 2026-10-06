@@ -11,7 +11,7 @@ User=reader
 Group=reader
 WorkingDirectory=/opt/reader-api
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/etc/reader-api.env
+EnvironmentFile=/opt/reader-api/.env
 ExecStart=/opt/reader-api/.venv/bin/daphne -b 127.0.0.1 -p 8001 config.asgi:application
 Restart=on-failure
 RestartSec=5

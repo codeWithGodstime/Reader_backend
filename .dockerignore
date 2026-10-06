@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+__pycache__
+*.py[cod]
+*.sqlite3
+db.sqlite3
+.env
+.env.*
+staticfiles
+media
+.idea
+.vscode
+.stitch-tmp
+*.md

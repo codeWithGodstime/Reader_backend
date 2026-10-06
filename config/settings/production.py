@@ -2,8 +2,13 @@ import environ
 from django.core.exceptions import ImproperlyConfigured
 
 from .base import *  # noqa: F403
+from .base import BASE_DIR
 
 env = environ.Env()
+# Process environment wins. Keys missing there are read from the app .env.
+_env_file = BASE_DIR / ".env"
+if _env_file.is_file():
+    env.read_env(_env_file)
 
 
 def _required(name):

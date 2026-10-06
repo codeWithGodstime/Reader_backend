@@ -282,5 +282,7 @@ After `python manage.py seed_reader`:
 | Email | `elena.rostova@reader.example` |
 | Password | `shelf-reader-4802` |
 | Voucher | `GUILD24` (`24.00` off, once) |
+| Admin email | `admin@reader.example` |
+| Admin password | `shelf-admin-4802` |
 
 Catalog includes Atomic Habits (`3c52c712-092d-46c1-8c71-1bcc451f1f7c`), Educated, Klara and the Sun, and Project Hail Mary, plus four more titles so page 2 of the shop is populated.

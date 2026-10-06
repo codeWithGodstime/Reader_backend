@@ -5,11 +5,12 @@ from pathlib import Path
 
 
 def main():
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.local")
-    if os.environ["DJANGO_SETTINGS_MODULE"] == "config.settings.local":
+    env_file = Path(__file__).resolve().parent / ".env"
+    if env_file.is_file():
         import environ
 
-        environ.Env.read_env(Path(__file__).resolve().parent / ".env")
+        environ.Env.read_env(env_file)
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.local")
     if len(sys.argv) > 1 and sys.argv[1] == "runserver":
         has_address = any(arg for arg in sys.argv[2:] if not arg.startswith("-"))
         if not has_address:

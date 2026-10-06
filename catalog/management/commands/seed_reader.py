@@ -23,6 +23,8 @@ from commerce.services import add_line, create_order, edition_for
 
 EMAIL = "elena.rostova@reader.example"
 PASSWORD = "shelf-reader-4802"
+ADMIN_EMAIL = "admin@reader.example"
+ADMIN_PASSWORD = "shelf-admin-4802"
 
 
 def cover(isbn):
@@ -314,7 +316,7 @@ def aware(year, month, day, hour=12, minute=0):
 
 
 class Command(BaseCommand):
-    help = "Load Reader sample catalog, Elena's account, and her orders."
+    help = "Load Reader sample catalog, Elena's account, a superuser, and her orders."
 
     def handle(self, *args, **options):
         genres = {slug: Genre.objects.update_or_create(slug=slug, defaults={"name": name})[0] for slug, name in GENRES}
@@ -383,10 +385,12 @@ class Command(BaseCommand):
         self._collections(books)
         self._reviews(books)
         user = self._user()
+        self._superuser()
         self._shelves(user, books)
         self._commerce(user, books)
         self._faqs()
         self.stdout.write(self.style.SUCCESS(f"Seeded {EMAIL} / {PASSWORD}"))
+        self.stdout.write(self.style.SUCCESS(f"Superuser {ADMIN_EMAIL} / {ADMIN_PASSWORD}"))
 
     def _collections(self, books):
         specs = [
@@ -505,6 +509,26 @@ class Command(BaseCommand):
             code="GUILD24",
             defaults={"amount": Decimal("24.00"), "user": user, "used": False},
         )
+        return user
+
+    def _superuser(self):
+        user = User.objects.filter(email=ADMIN_EMAIL).first()
+        if user is None:
+            user = User(
+                id=uuid.uuid5(uuid.UUID("15422850-2694-4085-8467-250000000001"), "user:admin"),
+                email=ADMIN_EMAIL,
+                patron_number="0001",
+                member_since=date(2023, 10, 1),
+            )
+        user.name = "Reader Admin"
+        user.member_since = date(2023, 10, 1)
+        user.patron_number = "0001"
+        user.is_staff = True
+        user.is_superuser = True
+        user.is_active = True
+        user.email_verified = True
+        user.set_password(ADMIN_PASSWORD)
+        user.save()
         return user
 
     def _shelves(self, user, books):

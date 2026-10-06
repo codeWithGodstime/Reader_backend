@@ -3,13 +3,17 @@
 #
 # Packages, a local Postgres database (unless DATABASE_URL is set), an nginx
 # reverse proxy, a single Daphne service, and a firewall that allows SSH,
-# HTTP, and HTTPS. Daphne binds to 127.0.0.1 only. Re-running the script
-# updates the app code, dependencies, and migrations without replacing
-# /etc/reader-api.env.
+# HTTP, and HTTPS. Daphne binds to 127.0.0.1 only. The env file is
+# $APP_DIR/.env (default /opt/reader-api/.env). Re-running the script updates
+# the app code, dependencies, and migrations, and fills env keys that are
+# missing or empty. Existing values are left in place. An old
+# /etc/reader-api.env is copied across once when the app env file is absent.
 #
 #   sudo ./deploy/setup-server.sh
 #
-# Optional environment (prompted on a terminal when the env file is new):
+# Optional environment. CORS origins and Google client IDs are prompted on a
+# terminal when still empty. The hostname and certificate email are prompted
+# only while the env file does not exist yet.
 #   APP_DOMAIN               public hostname; empty serves HTTP for any host
 #   CERTBOT_EMAIL            Let's Encrypt email; with APP_DOMAIN, requests a cert
 #   CORS_ALLOWED_ORIGINS     comma-separated browser origins
@@ -29,9 +33,9 @@ set -euo pipefail
 trap 'printf "error: setup failed at line %s\n" "$LINENO" >&2' ERR
 
 APP_USER=reader
-ENV_FILE=/etc/reader-api.env
+LEGACY_ENV_FILE=/etc/reader-api.env
 APP_DIR=${APP_DIR:-/opt/reader-api}
-DAPHNE_PORT=${DAPHNE_PORT:-8001}
+DAPHNE_PORT=${DAPHNE_PORT:-}
 DB_NAME=${DB_NAME:-reader}
 DB_USER=${DB_USER:-reader}
 APP_DOMAIN=${APP_DOMAIN:-}
@@ -44,6 +48,7 @@ DB_PASSWORD=${DB_PASSWORD:-}
 SECRET_KEY=${SECRET_KEY:-}
 SSH_PORT=${SSH_PORT:-}
 SEED=${SEED:-}
+CREATE_LOCAL_DB=0
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
@@ -105,17 +110,9 @@ if ! command -v systemctl >/dev/null 2>&1; then
   die "systemd is required."
 fi
 
-if [[ -f "$ENV_FILE" ]]; then
-  if [[ -z "$APP_DOMAIN" ]]; then
-    APP_DOMAIN=$(read_env_key APP_DOMAIN)
-  fi
-  if [[ -z "$DATABASE_URL" ]]; then
-    DATABASE_URL=$(read_env_key DATABASE_URL)
-  fi
-fi
-
 APP_DIR=$(realpath -m "$APP_DIR")
 REPO_DIR=$(realpath -m "$REPO_DIR")
+ENV_FILE="$APP_DIR/.env"
 case "$APP_DIR" in
   /|/usr|/etc|/var|/bin|/sbin|/root|/home|/opt)
     die "Refusing APP_DIR=$APP_DIR"
@@ -123,9 +120,6 @@ case "$APP_DIR" in
 esac
 if [[ "$APP_DIR" != /* ]]; then
   die "APP_DIR must be an absolute path."
-fi
-if [[ ! "$DAPHNE_PORT" =~ ^[0-9]+$ ]] || [[ "$DAPHNE_PORT" -lt 1 || "$DAPHNE_PORT" -gt 65535 ]]; then
-  die "DAPHNE_PORT must be a TCP port."
 fi
 if [[ -n "$APP_DOMAIN" && ! "$APP_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]; then
   die "APP_DOMAIN must be a hostname."
@@ -138,6 +132,35 @@ if [[ ! "$DB_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
 fi
 if [[ ! "$DB_USER" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
   die "DB_USER must be a Postgres identifier."
+fi
+
+# A saved value wins. Shell values fill keys that are still empty.
+use_saved() {
+  local var_name=$1
+  local key=$2
+  local saved
+  saved=$(read_env_key "$key")
+  if [[ -n "$saved" ]]; then
+    printf -v "$var_name" '%s' "$saved"
+  fi
+}
+
+if [[ ! -f "$ENV_FILE" && -f "$LEGACY_ENV_FILE" ]]; then
+  mkdir -p "$APP_DIR"
+  cp "$LEGACY_ENV_FILE" "$ENV_FILE"
+  log "Copied $LEGACY_ENV_FILE to $ENV_FILE"
+fi
+
+use_saved APP_DOMAIN APP_DOMAIN
+use_saved DATABASE_URL DATABASE_URL
+use_saved SECRET_KEY SECRET_KEY
+use_saved ALLOWED_HOSTS ALLOWED_HOSTS
+use_saved CORS_ALLOWED_ORIGINS CORS_ALLOWED_ORIGINS
+use_saved GOOGLE_OAUTH_CLIENT_IDS GOOGLE_OAUTH_CLIENT_IDS
+use_saved DAPHNE_PORT PORT
+DAPHNE_PORT=${DAPHNE_PORT:-8001}
+if [[ ! "$DAPHNE_PORT" =~ ^[0-9]+$ ]] || [[ "$DAPHNE_PORT" -lt 1 || "$DAPHNE_PORT" -gt 65535 ]]; then
+  die "DAPHNE_PORT must be a TCP port."
 fi
 
 prompt() {
@@ -156,39 +179,48 @@ if [[ ! -f "$ENV_FILE" ]]; then
   if [[ -n "$APP_DOMAIN" ]]; then
     prompt CERTBOT_EMAIL "Let's Encrypt email (empty to skip HTTPS): "
   fi
-  prompt CORS_ALLOWED_ORIGINS "CORS origins, comma-separated: "
-  prompt GOOGLE_OAUTH_CLIENT_IDS "Google OAuth client IDs, comma-separated: "
+fi
+prompt CORS_ALLOWED_ORIGINS "CORS origins, comma-separated: "
+prompt GOOGLE_OAUTH_CLIENT_IDS "Google OAuth client IDs, comma-separated: "
+
+ensure_openssl() {
   if ! command -v openssl >/dev/null 2>&1; then
     apt-get update
     apt-get install -y openssl
   fi
-  if [[ -z "$DATABASE_URL" ]]; then
-    : "${DB_PASSWORD:=$(openssl rand -hex 24)}"
-    DATABASE_URL="postgres://${DB_USER}:${DB_PASSWORD}@127.0.0.1:5432/${DB_NAME}"
-  fi
-  : "${SECRET_KEY:=$(openssl rand -hex 48)}"
-  if [[ -z "$ALLOWED_HOSTS" ]]; then
-    hosts=()
-    add_host() {
-      local value=$1
-      local existing
-      [[ -z "$value" ]] && return
-      for existing in "${hosts[@]:-}"; do
-        [[ "$existing" == "$value" ]] && return
-      done
-      hosts+=("$value")
-    }
-    add_host "$APP_DOMAIN"
-    add_host "127.0.0.1"
-    add_host "localhost"
-    for candidate in $(hostname -I 2>/dev/null || true); do
-      if [[ "$candidate" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
-        add_host "$candidate"
-        break
-      fi
+}
+
+if [[ -z "$DATABASE_URL" ]]; then
+  ensure_openssl
+  : "${DB_PASSWORD:=$(openssl rand -hex 24)}"
+  DATABASE_URL="postgres://${DB_USER}:${DB_PASSWORD}@127.0.0.1:5432/${DB_NAME}"
+  CREATE_LOCAL_DB=1
+fi
+if [[ -z "$SECRET_KEY" ]]; then
+  ensure_openssl
+  SECRET_KEY=$(openssl rand -hex 48)
+fi
+if [[ -z "$ALLOWED_HOSTS" ]]; then
+  hosts=()
+  add_host() {
+    local value=$1
+    local existing
+    [[ -z "$value" ]] && return
+    for existing in "${hosts[@]:-}"; do
+      [[ "$existing" == "$value" ]] && return
     done
-    ALLOWED_HOSTS=$(IFS=,; printf '%s' "${hosts[*]}")
-  fi
+    hosts+=("$value")
+  }
+  add_host "$APP_DOMAIN"
+  add_host "127.0.0.1"
+  add_host "localhost"
+  for candidate in $(hostname -I 2>/dev/null || true); do
+    if [[ "$candidate" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+      add_host "$candidate"
+      break
+    fi
+  done
+  ALLOWED_HOSTS=$(IFS=,; printf '%s' "${hosts[*]}")
 fi
 
 if [[ -n "$APP_DOMAIN" && ! "$APP_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]; then
@@ -265,7 +297,7 @@ if [[ "$USE_LOCAL_POSTGRES" -eq 1 ]]; then
   [[ "$ready" -eq 1 ]] || die "PostgreSQL did not become ready."
 fi
 
-if [[ "$USE_LOCAL_POSTGRES" -eq 1 && ! -f "$ENV_FILE" ]]; then
+if [[ "$USE_LOCAL_POSTGRES" -eq 1 && "$CREATE_LOCAL_DB" -eq 1 ]]; then
   log "Creating the Postgres role and database"
   db_identity=$(mktemp)
   chmod 600 "$db_identity"
@@ -310,8 +342,14 @@ ALTER SCHEMA public OWNER TO :"role_name";
 SQL
 fi
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  log "Writing $ENV_FILE"
+persist_env() {
+  local force_behind=$1
+  local behind=$2
+  if [[ -f "$ENV_FILE" ]]; then
+    log "Updating $ENV_FILE"
+  else
+    log "Writing $ENV_FILE"
+  fi
   SECRET_KEY="$SECRET_KEY" \
   ALLOWED_HOSTS="$ALLOWED_HOSTS" \
   DATABASE_URL="$DATABASE_URL" \
@@ -319,6 +357,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
   GOOGLE_OAUTH_CLIENT_IDS="$GOOGLE_OAUTH_CLIENT_IDS" \
   APP_DOMAIN="$APP_DOMAIN" \
   DAPHNE_PORT="$DAPHNE_PORT" \
+  BEHIND_HTTPS_PROXY="$behind" \
+  FORCE_BEHIND="$force_behind" \
   ENV_FILE="$ENV_FILE" \
   python3 - <<'PY'
 import os
@@ -328,30 +368,70 @@ def quote(value):
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
-lines = [
-    "# Reader API. Edit this file, then re-run deploy/setup-server.sh.",
-    "# The channel layer is in-memory: run one Daphne process.",
-    "DJANGO_SETTINGS_MODULE=config.settings.production",
-    f"SECRET_KEY={quote(os.environ['SECRET_KEY'])}",
-    f"ALLOWED_HOSTS={quote(os.environ['ALLOWED_HOSTS'])}",
-    f"DATABASE_URL={quote(os.environ['DATABASE_URL'])}",
-    f"CORS_ALLOWED_ORIGINS={quote(os.environ['CORS_ALLOWED_ORIGINS'])}",
-    f"GOOGLE_OAUTH_CLIENT_IDS={quote(os.environ['GOOGLE_OAUTH_CLIENT_IDS'])}",
-    f"PORT={os.environ['DAPHNE_PORT']}",
-]
-if os.environ.get("APP_DOMAIN"):
-    lines.append(f"APP_DOMAIN={quote(os.environ['APP_DOMAIN'])}")
-lines += [
-    "BEHIND_HTTPS_PROXY=false",
-    "SECURE_HSTS_SECONDS=0",
-    "",
-]
+def unquote(raw):
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
+        body = raw[1:-1]
+        return body.replace('\\"', '"').replace("\\\\", "\\")
+    return raw
+
+def last_index(lines, key):
+    prefix = f"{key}="
+    found = None
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            found = index
+    return found
+
+def fill(lines, key, value, quoted=True, force=False):
+    index = last_index(lines, key)
+    rendered = f"{key}={quote(value) if quoted else value}"
+    if index is None:
+        if value == "" and key == "APP_DOMAIN":
+            return
+        lines.append(rendered)
+        return
+    current = unquote(lines[index].split("=", 1)[1])
+    if force or current.strip() == "":
+        if value == "" and not force:
+            return
+        lines[index] = rendered
+
 path = Path(os.environ["ENV_FILE"])
-path.write_text("\n".join(lines))
+lines = path.read_text().splitlines() if path.is_file() else []
+if not any(line.startswith("# Reader API") for line in lines):
+    lines = [
+        "# Reader API. Edit this file, then re-run deploy/setup-server.sh.",
+        "# The channel layer is in-memory: run one Daphne process.",
+        *lines,
+    ]
+
+fill(lines, "DJANGO_SETTINGS_MODULE", "config.settings.production", quoted=False)
+fill(lines, "SECRET_KEY", os.environ["SECRET_KEY"])
+fill(lines, "ALLOWED_HOSTS", os.environ["ALLOWED_HOSTS"])
+fill(lines, "DATABASE_URL", os.environ["DATABASE_URL"])
+fill(lines, "CORS_ALLOWED_ORIGINS", os.environ["CORS_ALLOWED_ORIGINS"])
+fill(lines, "GOOGLE_OAUTH_CLIENT_IDS", os.environ["GOOGLE_OAUTH_CLIENT_IDS"])
+fill(lines, "PORT", os.environ["DAPHNE_PORT"], quoted=False)
+fill(lines, "APP_DOMAIN", os.environ.get("APP_DOMAIN", ""))
+fill(lines, "SECURE_HSTS_SECONDS", "0", quoted=False)
+fill(lines, "SECURE_HSTS_INCLUDE_SUBDOMAINS", "false", quoted=False)
+fill(
+    lines,
+    "BEHIND_HTTPS_PROXY",
+    os.environ["BEHIND_HTTPS_PROXY"],
+    quoted=False,
+    force=os.environ.get("FORCE_BEHIND") == "1",
+)
+
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text("\n".join(lines) + "\n")
 PY
   chown "root:${APP_USER}" "$ENV_FILE"
   chmod 640 "$ENV_FILE"
-fi
+}
+
+persist_env 0 false
 
 log "Installing the application"
 if [[ "$REPO_DIR" != "$APP_DIR" ]]; then
@@ -369,6 +449,10 @@ if [[ "$REPO_DIR" != "$APP_DIR" ]]; then
 fi
 chown -R "${APP_USER}:${APP_USER}" "$APP_DIR"
 chmod 755 "$APP_DIR"
+if [[ -f "$ENV_FILE" ]]; then
+  chown "root:${APP_USER}" "$ENV_FILE"
+  chmod 640 "$ENV_FILE"
+fi
 install -d -o "$APP_USER" -g "$APP_USER" -m 755 "$APP_DIR/media" "$APP_DIR/staticfiles"
 if ! runuser -u "$APP_USER" -- test -r "$APP_DIR/manage.py"; then
   die "User ${APP_USER} cannot read ${APP_DIR}. Use a path under /opt."
@@ -427,11 +511,8 @@ proxy_flag=false
 if [[ "$TLS" -eq 1 ]]; then
   proxy_flag=true
 fi
-if grep -q '^BEHIND_HTTPS_PROXY=' "$ENV_FILE"; then
-  sed -i "s/^BEHIND_HTTPS_PROXY=.*/BEHIND_HTTPS_PROXY=${proxy_flag}/" "$ENV_FILE"
-else
-  printf '\nBEHIND_HTTPS_PROXY=%s\n' "$proxy_flag" >> "$ENV_FILE"
-fi
+
+persist_env 1 "$proxy_flag"
 
 log "Installing the systemd service"
 python3 - "$SCRIPT_DIR/reader-api.service" /etc/systemd/system/reader-api.service \
